@@ -4,21 +4,23 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Xml;
 
 public class XmlSettings
 {
-    private const string xmlFormatVer = "1.0";
+    private const string xmlFormatVer = "1.1";
 
     private XmlDocument doc = new XmlDocument();
     private XmlElement xmlBody;
-    private string xmlContents;
+    private string xmlContents, xmlFileFormatVer, xmlFileFormat, xmlSettingsFileVer;
+    private const string xmlSettingsMinSupportedVer = "1.0";
+    private XmlDeclaration xmlDeclaration;
 
-    private string mainSettingsPath;
-    private bool revertOnFail;
-    private bool purgeOnRootFailure;
-    private string errorLogPathLoc;
-    private bool verboseLogging;
+    private string mainSettingsPath, errorLogPathLoc, backupPath;
+    private bool revertOnFail, purgeOnRootFailure, verboseLogging, verboseLevelMode, purgeIfXmlDecMissing, purgeOnUnsupportedVer, performBackups;
+    private bool isXmlCompatible = true;
+    private bool lockXML = false;
 
     /// <summary>
     /// Allows the use of the XmlSettings library.
@@ -26,22 +28,76 @@ public class XmlSettings
     /// <param name="settingsPath">The path for the settings file, can either be relative or absolute.</param>
     /// <param name="revertToDefaultOnFail">States if the settings should be reverted to the default if it cannot be parsed.</param>
     /// <param name="deleteFileIfRootMissing">States if the XML file should be automatically deleted (and recreated) if the root is missing.</param>
-    /// <param name="verboseMode">States if XMLSettings outputs verbose logging to the log file, rather than just errors.</param>
+    /// <param name="verbose">States if XMLSettings outputs verbose logging to the log file, rather than just errors.</param>
+    /// <param name="enhancedVerbose">The level of verbose logging that is performed (if it is enabled).</param>
+    /// <param name="deleteIfXmlDeclarationMissing">States if the XML file should be automatically deleted (and recreated) if the XML Declaration is missing.</param>
+    /// <param name="deleteOnUnsupportedVersion">States if the XML file should be automatically deleted (and recreated) if the XmlSettings Encoding version is unsupported and unmigratable.</param>
+    /// <param name="skipVersionMigration">States if the XML file should be not be automatically updated to support the latest XmlSettings encoding version.</param>
     /// <param name="logPath">The path for the log file.</param>
-    public XmlSettings(string settingsPath, bool revertToDefaultOnFail = true, bool deleteFileIfRootMissing = true, bool verboseMode = false, string logPath = "XmlSettings.log")
+    /// <param name="overrideBackupFile">Override the default path for file backups (default path is the settingsPath plus '.bkup').</param>
+    public XmlSettings(string settingsPath, bool revertToDefaultOnFail = true, bool deleteFileIfRootMissing = true, bool verbose = false, bool enhancedVerbose = false, bool deleteIfXmlDeclarationMissing = true, bool deleteOnUnsupportedVersion = false, bool alwaysBackupBeforeDeletion = true, string logPath = "XmlSettings.log", string overrideBackupFile = null)
     {
         mainSettingsPath = settingsPath;
         revertOnFail = revertToDefaultOnFail;
         purgeOnRootFailure = deleteFileIfRootMissing;
         errorLogPathLoc = logPath;
-        verboseLogging = verboseMode;
+        verboseLogging = verbose;
+        verboseLevelMode = enhancedVerbose;
+        purgeIfXmlDecMissing = deleteIfXmlDeclarationMissing;
+        purgeOnUnsupportedVer = deleteOnUnsupportedVersion;
+        performBackups = alwaysBackupBeforeDeletion;
+        
+        if (String.IsNullOrEmpty(overrideBackupFile))
+            backupPath = settingsPath.TrimEnd(new char[] { '\\', '/' }) + ".bkup";
+        else backupPath = overrideBackupFile;
 
-        writeToLog("New Instance Started with Verbose Logging... Hello World!");
-
-        if (!File.Exists(mainSettingsPath))
-            createXMLFile();
+        if (verboseLogging && !enhancedVerbose)
+        {
+            writeToLog("New Instance Started with Verbose Logging... Hello World!");
+        }
+        else if (verboseLogging && enhancedVerbose)
+        {
+            writeToLog("New Instance Started with Enhanced Verbose Logging... Hello World!");
+            writeToLog("settingsPath: " + settingsPath + ", revertOnFail: " + revertOnFail + ", deleteFileIfRootMissing: " + deleteFileIfRootMissing + ", verbose: " + verbose + ", enhancedVerbose: " + enhancedVerbose + ", deleteIfXmlDeclarationMissing: "
+           + deleteIfXmlDeclarationMissing + ", deleteOnUnsupportedVersion: " + deleteOnUnsupportedVersion + ", alwaysBackupBeforeDeletion: " + alwaysBackupBeforeDeletion + ", logPath: " + logPath + ", overrideBackupFile: " + overrideBackupFile);
+        }
         else
-            deleteEmptyParents();
+            writeToLog("New Instance Started... Hello World!");
+
+        initXMLSettings();
+    }
+
+    /// <summary>
+    /// Checks, loads and cleans up the XML file if it already exists. Or creates a new XML file if one doesn't.
+    /// </summary>
+    private void initXMLSettings()
+    {
+        if (!File.Exists(mainSettingsPath))
+        {
+            lockXML = true;
+            createXMLFile();
+        }
+        else
+            cleanupXML();
+
+        checkXML();
+    }
+
+    /// <summary>
+    /// Resets XMLSettings variables to their original values and reloads the XML from scratch.
+    /// </summary>
+    public void reloadXMLSettings()
+    {
+        writeToLog("Reloading Instance...");
+
+        doc = new XmlDocument();
+        xmlBody = null;
+        xmlContents = xmlFileFormatVer = xmlFileFormat = xmlSettingsFileVer = null;
+        xmlDeclaration = null;
+        isXmlCompatible = true;
+        lockXML = false;
+
+        initXMLSettings();
     }
 
     /// <summary>
@@ -54,12 +110,48 @@ public class XmlSettings
     }
 
     /// <summary>
-    /// Used to get the max supported formatting version of the Xml Document that can be read by this version of XmlSettings.
+    /// Used to get the current XmlSettings encoding version.
     /// </summary>
-    /// <returns>The latest supported formatting version that XmlSettings can work with.</returns>
-    public string getLatestSupportedFormattingVersion()
+    /// <returns>The current XmlSettings encoding version.</returns>
+    public string getEncodingVersion()
     {
         return xmlFormatVer;
+    }
+
+    /// <summary>
+    /// Used to get the XmlSettings encoding version of XML file.
+    /// </summary>
+    /// <returns>The XmlSettings encoding version of XML file.</returns>
+    public string getFileXmlSettingsVersion()
+    {
+        return xmlSettingsFileVer;
+    }
+
+    /// <summary>
+    /// Used to get the minimum supported XmlSettings encoding version.
+    /// </summary>
+    /// <returns>The minimum supported XmlSettings encoding version.</returns>
+    public string getMinSupportedEncodingVersion()
+    {
+        return xmlSettingsMinSupportedVer;
+    }
+
+    /// <summary>
+    /// Used to get the XML version of the currently loaded file.
+    /// </summary>
+    /// <returns>The XML version number of the loaded file.</returns>
+    public string getXmlVersion()
+    {
+        return xmlFileFormatVer;
+    }
+
+    /// <summary>
+    /// Used to get the encoding of the currently loaded file.
+    /// </summary>
+    /// <returns>The encoding type of the loaded file.</returns>
+    public string getFileEncoding()
+    {
+        return xmlFileFormat;
     }
 
     /// <summary>
@@ -67,12 +159,12 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="defaultValue">The value that will be assigned to the variable. Also used as a 'default' and can be reverted to at a later date.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was added successfully.</returns>
     public bool addBoolean(string varName, bool defaultValue)
     {
-        if (!doesDuplicateExist(varName))
+        if (!doesDuplicateExist(varName) && checkIfXmlCompatible())
         {
-            XmlNode booleanNode = doc.CreateElement("boolean");
+            XmlNode booleanNode = addToHeadingNode("boolean");
             xmlBody.AppendChild(booleanNode);
 
             XmlNode varNode = doc.CreateElement(varName);
@@ -86,8 +178,7 @@ public class XmlSettings
 
             return true;
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -95,12 +186,12 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="defaultValue">The value that will be assigned to the variable. Also used as a 'default' and can be reverted to at a later date.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was added successfully.</returns>
     public bool addString(string varName, string defaultValue)
     {
-        if (!doesDuplicateExist(varName))
+        if (!doesDuplicateExist(varName) && checkIfXmlCompatible())
         {
-            XmlNode stringNode = doc.CreateElement("string");
+            XmlNode stringNode = addToHeadingNode("string");
             xmlBody.AppendChild(stringNode);
 
             XmlNode varNode = doc.CreateElement(varName);
@@ -114,8 +205,7 @@ public class XmlSettings
 
             return true;
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -123,14 +213,12 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="defaultValue">The value that will be assigned to the variable. Also used as a 'default' and can be reverted to at a later date.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was added successfully.</returns>
     public bool addLong(string varName, long defaultValue)
     {
-        if (!doesDuplicateExist(varName))
+        if (!doesDuplicateExist(varName) && checkIfXmlCompatible())
         {
-            XmlNode longNode = doc.CreateElement("long");
-            xmlBody.AppendChild(longNode);
-
+            XmlNode longNode = addToHeadingNode("long");
             XmlNode varNode = doc.CreateElement(varName);
             XmlAttribute defaultVal = doc.CreateAttribute("default");
             defaultVal.Value = defaultValue.ToString();
@@ -142,8 +230,7 @@ public class XmlSettings
 
             return true;
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -151,14 +238,12 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="defaultValue">The value that will be assigned to the variable. Also used as a 'default' and can be reverted to at a later date.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was added successfully.</returns>
     public bool addInt(string varName, int defaultValue)
     {
-        if (!doesDuplicateExist(varName))
+        if (!doesDuplicateExist(varName) && checkIfXmlCompatible())
         {
-            XmlNode intNode = doc.CreateElement("int");
-            xmlBody.AppendChild(intNode);
-
+            XmlNode intNode = addToHeadingNode("int");
             XmlNode varNode = doc.CreateElement(varName);
             XmlAttribute defaultVal = doc.CreateAttribute("default");
             defaultVal.Value = defaultValue.ToString();
@@ -170,8 +255,7 @@ public class XmlSettings
 
             return true;
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -179,14 +263,12 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="defaultValue">The value that will be assigned to the variable. Also used as a 'default' and can be reverted to at a later date.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was added successfully.</returns>
     public bool addDouble(string varName, double defaultValue)
     {
-        if (!doesDuplicateExist(varName))
+        if (!doesDuplicateExist(varName) && checkIfXmlCompatible())
         {
-            XmlNode doubleNode = doc.CreateElement("double");
-            xmlBody.AppendChild(doubleNode);
-
+            XmlNode doubleNode = addToHeadingNode("double");
             XmlNode varNode = doc.CreateElement(varName);
             XmlAttribute defaultVal = doc.CreateAttribute("default");
             defaultVal.Value = defaultValue.ToString();
@@ -195,10 +277,10 @@ public class XmlSettings
             doubleNode.AppendChild(varNode);
             writeToLog("Added Double: '" + varName + "' with a value of: '" + defaultValue + "'");
             saveXML();
+
             return true;
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -206,20 +288,22 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="state">The value that will be assigned to the variable.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was set successfully.</returns>
     public bool setBoolean(string varName, bool state)
     {
-        loadXML();
-        XmlNodeList elemList = doc.GetElementsByTagName(varName);
-        if (elemList.Count == 1)
+        if (checkIfXmlCompatible())
         {
-            elemList[0].InnerText = state.ToString();
-            writeToLog("Changed Boolean: '" + varName + "' to a value of: '" + state + "'");
-            saveXML();
-            return true;
+            loadXML();
+            XmlNodeList elemList = doc.GetElementsByTagName(varName);
+            if (elemList.Count == 1)
+            {
+                elemList[0].InnerText = state.ToString();
+                writeToLog("Changed Boolean: '" + varName + "' to a value of: '" + state + "'");
+                saveXML();
+                return true;
+            }
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -227,20 +311,22 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="state">The value that will be assigned to the variable.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was set successfully.</returns>
     public bool setString(string varName, string state)
     {
-        loadXML();
-        XmlNodeList elemList = doc.GetElementsByTagName(varName);
-        if (elemList.Count == 1)
+        if (checkIfXmlCompatible())
         {
-            elemList[0].InnerText = state;
-            writeToLog("Changed String: '" + varName + "' to a value of: '" + state + "'");
-            saveXML();
-            return true;
+            loadXML();
+            XmlNodeList elemList = doc.GetElementsByTagName(varName);
+            if (elemList.Count == 1)
+            {
+                elemList[0].InnerText = state;
+                writeToLog("Changed String: '" + varName + "' to a value of: '" + state + "'");
+                saveXML();
+                return true;
+            }
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -248,20 +334,22 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="state">The value that will be assigned to the variable.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was set successfully.</returns>
     public bool setInt(string varName, int state)
     {
-        loadXML();
-        XmlNodeList elemList = doc.GetElementsByTagName(varName);
-        if (elemList.Count == 1)
+        if (checkIfXmlCompatible())
         {
-            elemList[0].InnerText = state.ToString();
-            writeToLog("Changed Int: '" + varName + "' to a value of: '" + state + "'");
-            saveXML();
-            return true;
+            loadXML();
+            XmlNodeList elemList = doc.GetElementsByTagName(varName);
+            if (elemList.Count == 1)
+            {
+                elemList[0].InnerText = state.ToString();
+                writeToLog("Changed Int: '" + varName + "' to a value of: '" + state + "'");
+                saveXML();
+                return true;
+            }
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -269,20 +357,22 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="state">The value that will be assigned to the variable.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was set successfully.</returns>
     public bool setLong(string varName, long state)
     {
-        loadXML();
-        XmlNodeList elemList = doc.GetElementsByTagName(varName);
-        if (elemList.Count == 1)
+        if (checkIfXmlCompatible())
         {
-            elemList[0].InnerText = state.ToString();
-            writeToLog("Changed Long: '" + varName + "' to a value of: '" + state + "'");
-            saveXML();
-            return true;
+            loadXML();
+            XmlNodeList elemList = doc.GetElementsByTagName(varName);
+            if (elemList.Count == 1)
+            {
+                elemList[0].InnerText = state.ToString();
+                writeToLog("Changed Long: '" + varName + "' to a value of: '" + state + "'");
+                saveXML();
+                return true;
+            }
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -290,140 +380,147 @@ public class XmlSettings
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
     /// <param name="state">The value that will be assigned to the variable.</param>
-    /// <returns></returns>
+    /// <returns>If the variables was set successfully.</returns>
     public bool setDouble(string varName, double state)
     {
-        loadXML();
-        XmlNodeList elemList = doc.GetElementsByTagName(varName);
-        if (elemList.Count == 1)
+        if (checkIfXmlCompatible())
         {
-            elemList[0].InnerText = state.ToString();
-            writeToLog("Changed Double: '" + varName + "' to a value of: '" + state + "'");
-            saveXML();
-            return true;
+            loadXML();
+            XmlNodeList elemList = doc.GetElementsByTagName(varName);
+            if (elemList.Count == 1)
+            {
+                elemList[0].InnerText = state.ToString();
+                writeToLog("Changed Double: '" + varName + "' to a value of: '" + state + "'");
+                saveXML();
+                return true;
+            }
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
     /// Reads the Boolean variable of an already existing variable in the XML File.
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
-    /// <returns>If value was read successfully.</returns>
+    /// <returns>If the value was read successfully.</returns>
     public bool readBoolean(string varName)
     {
-        try
+        if (checkIfXmlCompatible())
         {
-            loadXML();
-            XmlNodeList elemList = doc.GetElementsByTagName(varName);
-            writeToLog("Reading Boolean: '" + varName + "'");
-            if (elemList.Count > 0)
-                return bool.Parse(elemList[0].InnerXml);
-            else
-                return false;
+            try
+            {
+                loadXML();
+                XmlNodeList elemList = doc.GetElementsByTagName(varName);
+                writeToLog("Reading Boolean: '" + varName + "'");
+                if (elemList.Count > 0)
+                    return bool.Parse(elemList[0].InnerXml);
+            }
+            catch
+            {
+                if (revertOnFail) revertToDefault(varName);
+            }
         }
-        catch
-        {
-            if (revertOnFail) revertToDefault(varName);
-            return false;
-        }
+        return false;
     }
 
     /// <summary>
     /// Reads the String variable of an already existing variable in the XML File.
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
-    /// <returns>If value was read successfully.</returns>
+    /// <returns>If the value was read successfully.</returns>
     public string readString(string varName)
     {
-        try
+        if (checkIfXmlCompatible())
         {
-            loadXML();
-            XmlNodeList elemList = doc.GetElementsByTagName(varName);
-            writeToLog("Reading String: '" + varName + "'");
-            if (elemList.Count > 0)
-                return elemList[0].InnerXml.ToString();
-            else
-                return "";
+            try
+            {
+                loadXML();
+                XmlNodeList elemList = doc.GetElementsByTagName(varName);
+                writeToLog("Reading String: '" + varName + "'");
+                if (elemList.Count > 0)
+                    return elemList[0].InnerXml.ToString();
+            }
+            catch
+            {
+                if (revertOnFail) revertToDefault(varName);
+            }
         }
-        catch
-        {
-            if (revertOnFail) revertToDefault(varName);
-            return "";
-        }
+        return "";
     }
 
     /// <summary>
     /// Reads the Int variable of an already existing variable in the XML File.
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
-    /// <returns>If value was read successfully.</returns>
+    /// <returns>If the value was read successfully.</returns>
     public int readInt(string varName)
     {
-        try
+        if (checkIfXmlCompatible())
         {
-            loadXML();
-            XmlNodeList elemList = doc.GetElementsByTagName(varName);
-            writeToLog("Reading Int: '" + varName + "'");
-            if (elemList.Count > 0)
-                return int.Parse(elemList[0].InnerXml);
-            else
-                return 0;
+            try
+            {
+                loadXML();
+                XmlNodeList elemList = doc.GetElementsByTagName(varName);
+                writeToLog("Reading Int: '" + varName + "'");
+                if (elemList.Count > 0)
+                    return int.Parse(elemList[0].InnerXml);
+            }
+            catch
+            {
+                if (revertOnFail) revertToDefault(varName);
+            }
         }
-        catch
-        {
-            if (revertOnFail) revertToDefault(varName);
-            return 0;
-        }
+        return 0;
     }
 
     /// <summary>
     /// Reads the Long variable of an already existing variable in the XML File.
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
-    /// <returns>If value was read successfully.</returns>
+    /// <returns>If the value was read successfully.</returns>
     public long readLong(string varName)
     {
-        try
+        if (checkIfXmlCompatible())
         {
-            loadXML();
-            XmlNodeList elemList = doc.GetElementsByTagName(varName);
-            writeToLog("Reading Long: '" + varName + "'");
-            if (elemList.Count > 0)
-                return long.Parse(elemList[0].InnerXml);
-            else
-                return 0;
+            try
+            {
+                loadXML();
+                XmlNodeList elemList = doc.GetElementsByTagName(varName);
+                writeToLog("Reading Long: '" + varName + "'");
+                if (elemList.Count > 0)
+                    return long.Parse(elemList[0].InnerXml);
+            }
+            catch
+            {
+                if (revertOnFail) revertToDefault(varName);
+            }
         }
-        catch
-        {
-            if (revertOnFail) revertToDefault(varName);
-            return 0;
-        }
+        return 0;
     }
 
     /// <summary>
     /// Reads the Double variable of an already existing variable in the XML File.
     /// </summary>
     /// <param name="varName">The name of the variable in the XML File.</param>
-    /// <returns>If value was read successfully.</returns>
+    /// <returns>If the value was read successfully.</returns>
     public double readDouble(string varName)
     {
-        try
+        if (checkIfXmlCompatible())
         {
-            loadXML();
-            XmlNodeList elemList = doc.GetElementsByTagName(varName);
-            writeToLog("Reading Double: '" + varName + "'");
-            if (elemList.Count > 0)
-                return double.Parse(elemList[0].InnerXml);
-            else
-                return 0;
+            try
+            {
+                loadXML();
+                XmlNodeList elemList = doc.GetElementsByTagName(varName);
+                writeToLog("Reading Double: '" + varName + "'");
+                if (elemList.Count > 0)
+                    return double.Parse(elemList[0].InnerXml);
+            }
+            catch
+            {
+                if (revertOnFail) revertToDefault(varName);
+            }
         }
-        catch
-        {
-            if (revertOnFail) revertToDefault(varName);
-            return 0;
-        }
+        return 0;
     }
 
     /// <summary>
@@ -436,8 +533,8 @@ public class XmlSettings
         writeToLog("Attempting to remove Boolean: '" + varName + "'");
         if (getVarType(varName) == "Boolean")
             return removeXmlElement(varName);
-        else
-            return false;
+
+        return false;
     }
 
     /// <summary>
@@ -450,8 +547,8 @@ public class XmlSettings
         writeToLog("Attempting to remove String: '" + varName + "'");
         if (getVarType(varName) == "String")
             return removeXmlElement(varName);
-        else
-            return false;
+
+        return false;
     }
 
     /// <summary>
@@ -464,8 +561,8 @@ public class XmlSettings
         writeToLog("Attempting to remove Int: '" + varName + "'");
         if (getVarType(varName) == "Int")
             return removeXmlElement(varName);
-        else
-            return false;
+
+        return false;
     }
 
     /// <summary>
@@ -478,7 +575,7 @@ public class XmlSettings
         writeToLog("Attempting to remove Long: '" + varName + "'");
         if (getVarType(varName) == "Long")
             return removeXmlElement(varName);
-        else
+        
             return false;
     }
 
@@ -492,32 +589,37 @@ public class XmlSettings
         writeToLog("Attempting to remove Double: '" + varName + "'");
         if (getVarType(varName) == "Double")
             return removeXmlElement(varName);
-        else
+        
             return false;
     }
 
-    //Removes the XML Element of the specified varName, not accessible publicly to avoid removing incorrect variables.
+    /// <summary>
+    /// Removes the XML Element of the specified varName, not accessible publicly to avoid removing incorrect variables.
+    /// </summary>
+    /// <param name="varName">The name of the variable to remove.</param>
+    /// <returns>If the XML Element was removed sucessfully.</returns>
     private bool removeXmlElement(string varName)
     {
-        try
+        if (checkIfXmlCompatible())
         {
-            loadXML();
-            XmlNodeList elemList = doc.GetElementsByTagName(varName);
-            if (elemList.Count > 0)
+            try
             {
-                elemList[0].ParentNode.RemoveAll();
-                saveXML();
-                deleteEmptyParents();
-                return true;
+                loadXML();
+                XmlNodeList elemList = doc.GetElementsByTagName(varName);
+                if (elemList.Count > 0)
+                {
+                    elemList[0].ParentNode.RemoveAll();
+                    saveXML();
+                    deleteEmptyParents();
+                    return true;
+                }
             }
-            else
-                return false;
+            catch
+            {
+                if (revertOnFail) revertToDefault(varName);
+            }
         }
-        catch
-        {
-            if (revertOnFail) revertToDefault(varName);
-            return false;
-        }
+        return false;
     }
 
     /// <summary>
@@ -536,8 +638,7 @@ public class XmlSettings
             saveXML();
             return true;
         }
-        else
-            return false;
+        return false;
     }
 
     /// <summary>
@@ -551,8 +652,8 @@ public class XmlSettings
         XmlNodeList elemList = doc.GetElementsByTagName(varName);
         if (elemList.Count > 0)
             return true;
-        else
-            return false;
+        
+        return false;
     }
 
     /// <summary>
@@ -566,11 +667,24 @@ public class XmlSettings
         XmlNodeList elemList = doc.GetElementsByTagName(varName);
         if (elemList.Count > 0)
             return uppercaseFirst(elemList[0].ParentNode.Name);
-        else
-            return null;
+
+        return null;
     }
 
-    //Deletes any leftover, empty, parent nodes from removing variables.
+    /// <summary>
+    /// Cleans up the XML file. Deleting any unneeded information or moving nodes around.
+    /// </summary>
+    public void cleanupXML()
+    {
+        condenseXMLNodes();
+        setXmlSettingsEncodingVersion(getEncodingVersion());
+        deleteEmptyParents();
+        loadXML();
+    }
+
+    /// <summary>
+    /// Deletes any leftover, empty, parent nodes from removing variables.
+    /// </summary>
     private void deleteEmptyParents()
     {
         loadXML();
@@ -584,79 +698,473 @@ public class XmlSettings
                 {
                     writeToLog("Purging empty parent node: '" + node.Name + "'");
                     node.ParentNode.RemoveChild(node);
-                } 
+                }
             }
         }
-
         saveXML();
     }
 
-    //Saves the XML file loaded in memory to the disk.
+    /// <summary>
+    /// Condenses XML Nodes of the same type into one parent (Updates 1.0 formatting to 1.1).
+    /// </summary>
+    private void condenseXMLNodes()
+    {
+        deleteEmptyParents();
+
+        XmlNodeList intNodes = doc.SelectNodes("//int");
+        XmlNodeList longNodes = doc.SelectNodes("//long");
+        XmlNodeList boolNodes = doc.SelectNodes("//boolean");
+        XmlNodeList stringNodes = doc.SelectNodes("//string");
+        XmlNodeList doubleNodes = doc.SelectNodes("//double");
+
+        if (intNodes.Count > 1 || longNodes.Count > 1 || boolNodes.Count > 1 || stringNodes.Count > 1 || doubleNodes.Count > 1)
+        {
+            writeToLog("Uncondensed XML nodes detected: Condensing XML nodes", false, true);
+
+            performXMLBackup();
+
+            List<XmlNode> childIntNodes = new List<XmlNode>();
+            List<XmlNode> childLongNodes = new List<XmlNode>();
+            List<XmlNode> childBoolNodes = new List<XmlNode>();
+            List<XmlNode> childStringNodes = new List<XmlNode>();
+            List<XmlNode> childDoubleNodes = new List<XmlNode>();
+
+            foreach (XmlNode node in intNodes)
+            {
+                foreach (XmlNode childNode in node.ChildNodes)
+                {
+                    childIntNodes.Add(childNode);
+                }
+            }
+
+            foreach (XmlNode node in longNodes)
+            {
+                foreach (XmlNode childNode in node.ChildNodes)
+                {
+                    childLongNodes.Add(childNode);
+                }
+            }
+
+            foreach (XmlNode node in boolNodes)
+            {
+                foreach (XmlNode childNode in node.ChildNodes)
+                {
+                    childBoolNodes.Add(childNode);
+                }
+            }
+
+            foreach (XmlNode node in stringNodes)
+            {
+                foreach (XmlNode childNode in node.ChildNodes)
+                {
+                    childStringNodes.Add(childNode);
+                }
+            }
+
+            foreach (XmlNode node in doubleNodes)
+            {
+                foreach (XmlNode childNode in node.ChildNodes)
+                {
+                    childDoubleNodes.Add(childNode);
+                }
+            }
+
+            deleteXMLFile(false);
+            createXMLFile();
+
+            XmlNode intNode = addToHeadingNode("int");
+            XmlNode longNode = addToHeadingNode("long");
+            XmlNode boolNode = addToHeadingNode("boolean");
+            XmlNode stringNode = addToHeadingNode("string");
+            XmlNode doubleNode = addToHeadingNode("double");
+
+            xmlBody.AppendChild(intNode);
+            xmlBody.AppendChild(longNode);
+            xmlBody.AppendChild(boolNode);
+            xmlBody.AppendChild(stringNode);
+            xmlBody.AppendChild(doubleNode);
+
+            try
+            {
+                foreach (XmlNode node in childIntNodes)
+                {
+                    intNode.AppendChild(doc.ImportNode(node, true));
+                }
+
+                foreach (XmlNode node in childLongNodes)
+                {
+                    longNode.AppendChild(doc.ImportNode(node, true));
+                }
+
+                foreach (XmlNode node in childBoolNodes)
+                {
+                    boolNode.AppendChild(doc.ImportNode(node, true));
+                }
+
+                foreach (XmlNode node in childStringNodes)
+                {
+                    stringNode.AppendChild(doc.ImportNode(node, true));
+                }
+
+                foreach (XmlNode node in childDoubleNodes)
+                {
+                    doubleNode.AppendChild(doc.ImportNode(node, true));
+                }
+
+                saveXML();
+                reloadXMLSettings();
+            }
+            catch (Exception e)
+            {
+                writeToLog("An error occurred while trying to condense the XML nodes! Error: " + e.ToString(), true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Saves the XML file loaded in memory to the disk.
+    /// </summary>
     private void saveXML()
     {
         doc.Save(mainSettingsPath);
     }
 
-    //Loads the XML file from disk into memory.
+    /// <summary>
+    /// Loads the XML file from disk into memory.
+    /// </summary>
+    /// <param name="skipRootCatch">Toggles whether the file should be recreated if the root node is missing.</param>
     private void loadXML(bool skipRootCatch = false)
     {
-        try
+        if (checkIfXmlCompatible())
         {
-            doc.Load(mainSettingsPath);
-            xmlContents = doc.InnerXml;
-            xmlBody = doc.DocumentElement;
-        }
-        catch (Exception e)
-        {
-            if (purgeOnRootFailure && !skipRootCatch)
+            try
             {
-                createXMLFile();
-                loadXML();
+                doc.Load(mainSettingsPath);
+                xmlContents = doc.InnerXml;
+                xmlBody = doc.DocumentElement;
             }
-            else writeToLog(e.ToString(), true);
+            catch (Exception e)
+            {
+                if (purgeOnRootFailure && !skipRootCatch)
+                {
+                    writeToLog("The XML root node is missing. Deleting and recreating the file...", false, true);
+                    recreateXMLFile(false);
+                }
+                else writeToLog("The XML root node is missing. Not deleting the file on request. Error: " + e.ToString(), true);
+            }
         }
     }
 
-    //Creates a new XML file with the valid Declarations and Elements.
-    private void createXMLFile()
+    /// <summary>
+    /// Creates a new XML file with the valid Declarations and Elements.
+    /// </summary>
+    /// 
+    public void createXMLFile()
     {
-        XmlDeclaration xmlDeclaration = doc.CreateXmlDeclaration(xmlFormatVer, "UTF-8", null);
-        XmlElement root = doc.DocumentElement;
-        doc.InsertBefore(xmlDeclaration, root);
+        if (lockXML)
+        {
+            XmlDeclaration xmlDeclaration = doc.CreateXmlDeclaration("1.0", "UTF-8", null);
+            XmlElement root = doc.DocumentElement;
 
-        xmlBody = doc.CreateElement(string.Empty, "body", string.Empty);
-        doc.AppendChild(xmlBody);
+            XmlElement pi = doc.CreateElement("XmlSettingsEncodingVersion");
+            pi.InnerText = getEncodingVersion();
 
-        writeToLog("New XML file has been created!");
-        saveXML();
+            doc.InsertBefore(xmlDeclaration, root);
+
+            xmlBody = doc.CreateElement(string.Empty, "body", string.Empty);
+            doc.AppendChild(xmlBody);
+            xmlBody.AppendChild(pi);
+
+            lockXML = false;
+
+            writeToLog("A new XMLSettings file has been created!");
+            saveXML();
+        }
+        else writeToLog("Cannot create a new XMLSettings file since another is already loaded and in use.", false, true);
     }
 
-    //Checks if another variable exists with the same name.
+    /// <summary>
+    /// Recreates an empty XML file with the valid Declarations and Elements.
+    /// </summary>
+    private void recreateXMLFile(bool deleteBackups = true, bool skipBackup = false)
+    {
+        if (performBackups && !deleteBackups && !skipBackup) performXMLBackup();
+        deleteXMLFile(deleteBackups);
+        createXMLFile();
+        loadXML();
+    }
+
+    /// <summary>
+    /// Creates a backup of the XML file.
+    /// </summary>
+    public void performXMLBackup()
+    {
+        if (File.Exists(mainSettingsPath))
+        {
+            if (File.Exists(backupPath)) File.Delete(backupPath);
+            File.Copy(mainSettingsPath, backupPath);
+        }
+    }
+
+    /// <summary>
+    /// Deletes the XML file backups.
+    /// </summary>
+    public void deleteXMLBackups()
+    {
+        writeToLog("XMLSettings backup has been deleted.", false, true);
+        File.Delete(backupPath);
+    }
+
+    /// <summary>
+    /// Deletes the entire XML File and locks out any modification or read attempts.
+    /// </summary>
+    /// <param name="deleteBackups">Also deletes the XML file backups.</param>
+    public void deleteXMLFile(bool deleteBackups = true)
+    {
+        lockXMLSettings();
+
+        if (deleteBackups) deleteXMLBackups();
+        File.Delete(mainSettingsPath);
+    }
+
+    /// <summary>
+    /// Checks if another variable exists with the same name.
+    /// </summary>
+    /// <param name="varName">Variable name to check.</param>
+    /// <returns>A boolean depending on if the variable already exists.</returns>
     private bool doesDuplicateExist(string varName)
     {
         loadXML();
         XmlNodeList elemList = doc.GetElementsByTagName(varName);
         if (elemList.Count > 0)
             return true;
-        else
-            return false;
+        
+        return false;
     }
 
-    //Capitalises the first letter of a string.
+    /// <summary>
+    /// Capitalises the first letter of a string.
+    /// </summary>
+    /// <param name="s">String use as source.</param>
+    /// <returns>The original string with the first letter capitalised.</returns>
     private string uppercaseFirst(string s)
     {
-        if (string.IsNullOrEmpty(s))
-            return string.Empty;
+        if (string.IsNullOrEmpty(s)) return string.Empty;
 
         return char.ToUpper(s[0]) + s.Substring(1);
     }
 
-    //Writes a string to the log file.
-    private void writeToLog(string log, bool isError = false)
+    /// <summary>
+    /// Writes a string to the log file.
+    /// </summary>
+    /// <param name="log">Message to add to log file.</param>
+    /// <param name="isError">Whether the log message is an error.</param>
+    private void writeToLog(string log, bool isError = false, bool isWarn = false)
     {
-        if (isError)
-            File.AppendAllText(errorLogPathLoc, "[" + DateTime.Now.ToString("hh:mm:ss tt") + "] [ERROR] " + log + Environment.NewLine);
-        else if (verboseLogging)
-            File.AppendAllText(errorLogPathLoc, "[" + DateTime.Now.ToString("hh:mm:ss tt") + "] [LOG] " + log + Environment.NewLine);
+        if (!String.IsNullOrEmpty(log))
+        {
+            if (isError)
+                File.AppendAllText(errorLogPathLoc, "[" + DateTime.Now.ToString("hh:mm:ss tt") + "] [ERROR] " + log + Environment.NewLine);
+            else if (verboseLogging && isWarn)
+                File.AppendAllText(errorLogPathLoc, "[" + DateTime.Now.ToString("hh:mm:ss tt") + "] [WARN] " + log + Environment.NewLine);
+            else if (verboseLogging)
+                File.AppendAllText(errorLogPathLoc, "[" + DateTime.Now.ToString("hh:mm:ss tt") + "] [LOG] " + log + Environment.NewLine);
+        }
+    }
+
+    /// <summary>
+    /// Checks to see if the specified node exists and selects it, if not it will create a new one (and selects that).
+    /// </summary>
+    /// <param name="headingName">Node to check for.</param>
+    /// <returns>An XMLNode of the specified node.</returns>
+    private XmlNode addToHeadingNode(string headingName)
+    {
+        XmlNode node;
+
+        if (doc.DocumentElement[headingName] != null)
+            node = doc.DocumentElement[headingName];
+        else
+        {
+            node = doc.CreateElement(headingName);
+            xmlBody.AppendChild(node);
+        }
+        return node;
+    }
+
+    /// <summary>
+    /// Checks to ensure the specified XML file is compatible with the current version of XMLSettings.
+    /// </summary>
+    /// <returns>A boolean of if the XML file is supported.</returns>
+    public bool checkIfXmlCompatible()
+    {
+        if (lockXML) writeToLog("This XMLSettings file has been locked and cannot be read from or written to.", true);
+        return isXmlCompatible;
+    }
+
+    /// <summary>
+    /// Does various checks to the XML file on initialization.
+    /// </summary>
+    private void checkXML()
+    {
+        if (!isXmlFileVerSupported())
+        {
+            doc = null;
+            writeToLog("The specified XMLSettings file has not been encoded in a supported XmlSettings version!", true);
+
+            if (purgeOnUnsupportedVer)
+            {
+                writeToLog("Deleting unsupported XMLSettings File.", false, true);
+                recreateXMLFile(false);
+            }
+            else isXmlCompatible = false;
+        }
+    }
+
+    /// <summary>
+    /// Parses the version into an int array.
+    /// </summary>
+    /// <param name="version">Version as a string.</param>
+    /// <returns>Version as an int array.</returns>
+    private int[] parseVersion(string version)
+    {
+        if (!String.IsNullOrEmpty(version))
+        {
+            string[] sVersionAsArray = version.Split('.');
+            List<int> iVersionAsList = new List<int>();
+
+            foreach (String s in sVersionAsArray)
+            {
+                iVersionAsList.Add(Convert.ToInt32(s));
+            }
+
+            return iVersionAsList.ToArray();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Gets if the XML File Version is supported.
+    /// </summary>
+    /// <returns>If the XML file is supported.</returns>
+    private bool isXmlFileVerSupported()
+    {
+        loadXmlDeclaration();
+        loadXMLInformation();
+
+        int[] fileVersion = parseVersion(getFileXmlSettingsVersion());
+        int[] libVersion = parseVersion(getEncodingVersion());
+        int[] supVersion = parseVersion(getMinSupportedEncodingVersion());
+
+        int longestVersionArray = fileVersion.Length;
+        if (libVersion.Length > longestVersionArray) longestVersionArray = libVersion.Length;
+
+        if (fileVersion[0] > supVersion[0])
+        {
+            if (fileVersion[0] > libVersion[0])
+            {
+                return false;
+            }
+        }
+
+        if (fileVersion[1] > supVersion[1])
+        {
+            if (fileVersion[1] > libVersion[1])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Loads the XML Declatation.
+    /// </summary>
+    private void loadXmlDeclaration()
+    {
+        loadXML();
+        try
+        {
+            if (doc.ChildNodes[0].NodeType == XmlNodeType.XmlDeclaration)
+            {
+                xmlDeclaration = doc.ChildNodes[0] as XmlDeclaration;
+                xmlFileFormatVer = xmlDeclaration.Version;
+                xmlFileFormat = xmlDeclaration.Encoding;
+            }
+            else if (!purgeIfXmlDecMissing)
+            {
+                writeToLog("The XML Declaration is missing. Assuming the version as '1.0' and encoding as 'UTF-8'.", false, true);
+                xmlFileFormatVer = "1.0";
+                xmlFileFormat = "UTF-8";
+            }
+            else
+            {
+                writeToLog("The XML Declaration is missing. Deleting and recreating the file...", false, true);
+                recreateXMLFile(false);
+            }
+        }
+        catch (Exception e)
+        {
+            writeToLog("An error occurred while trying to load the XML declaration! Error: " + e.ToString(), true);
+        }
+    }
+
+    /// <summary>
+    /// Sets the XML Encoding Version variable in the XML file.
+    /// </summary>
+    /// <param name="version">The new version.</param>
+    private void setXmlSettingsEncodingVersion(string version)
+    {
+        loadXML();
+        XmlNodeList elemList = doc.GetElementsByTagName("XmlSettingsEncodingVersion");
+        if (elemList.Count > 0)
+        {
+            elemList[0].InnerText = version;
+        }
+        else
+        {
+            XmlElement pi = doc.CreateElement("XmlSettingsEncodingVersion");
+            pi.InnerText = version;
+
+            doc.DocumentElement.InsertBefore(pi, doc.DocumentElement.FirstChild);
+        }
+        saveXML();
+    }
+
+    /// <summary>
+    /// Loads the XmlSettings Metadata from the XML file.
+    /// </summary>
+    private void loadXMLInformation()
+    {
+        loadXML();
+        try
+        {
+            XmlNodeList elemList = doc.GetElementsByTagName("XmlSettingsEncodingVersion");
+            if (elemList.Count > 0)
+            {
+                xmlSettingsFileVer = elemList[0].InnerXml;
+            }
+            else
+            {
+                writeToLog("The XMLSettings Metadata information is missing. Assuming the encoded XMLSettings version was '1.0'.", false, true);
+                xmlSettingsFileVer = "1.0";
+            }
+        }
+        catch (Exception e)
+        {
+            writeToLog(e.ToString(), true);
+        }
+    }
+
+    /// <summary>
+    /// Locks the XML file to disable read and writes.
+    /// </summary>
+    private void lockXMLSettings()
+    {
+        doc = new XmlDocument();
+        xmlBody = null;
+        xmlContents = xmlFileFormatVer = xmlFileFormat = xmlSettingsFileVer = null;
+        xmlDeclaration = null;
+        isXmlCompatible = false;
+        lockXML = true;
     }
 }
