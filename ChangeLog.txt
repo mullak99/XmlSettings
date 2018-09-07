@@ -1,0 +1,21 @@
+|---| 1.0.0.0 |---|
+
+- Initial Release
+
+~ Uses Format Version: 1.0
+
+|---| 1.1.0.0 |---|
+
+- Condensed XML nodes so all variables of the same type are under the same parent
+- Added node to determine the version of XMLSettings used to create/last modify the XML file
+
+~ Uses Format Version: 1.1
+~ Supports Format Version 1.0-1.1
+
+|---| 1.1.1.0 |---|
+
+- Added new possible variables (Int64, Int32, Int16, UInt64, UInt32, UInt16, Byte)
+- Neatened code
+
+~ Uses Format Version: 1.1
+~ Supports Format Version 1.0-1.1
