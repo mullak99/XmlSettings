@@ -1083,8 +1083,8 @@ public class XmlSettings
         writeToLog("Attempting to remove Long: '" + varName + "'");
         if (getVarType(varName) == "Long")
             return removeXmlElement(varName);
-        
-            return false;
+
+        return false;
     }
 
     /// <summary>
@@ -1097,8 +1097,8 @@ public class XmlSettings
         writeToLog("Attempting to remove Double: '" + varName + "'");
         if (getVarType(varName) == "Double")
             return removeXmlElement(varName);
-        
-            return false;
+
+        return false;
     }
 
     /// <summary>
@@ -1174,7 +1174,7 @@ public class XmlSettings
         XmlNodeList elemList = _xmlDoc.GetElementsByTagName(varName);
         if (elemList.Count > 0)
             return true;
-        
+
         return false;
     }
 
@@ -1460,7 +1460,7 @@ public class XmlSettings
         XmlNodeList elemList = _xmlDoc.GetElementsByTagName(varName);
         if (elemList.Count > 0)
             return true;
-        
+
         return false;
     }
 
