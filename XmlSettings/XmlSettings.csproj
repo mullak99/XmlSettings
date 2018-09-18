@@ -1,18 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>netcoreapp2.0</TargetFramework>
+    <TargetFrameworks>net45;netcoreapp2.0</TargetFrameworks>
     <PackageId>XmlSettings</PackageId>
     <Authors>mullak99</Authors>
     <Company>mullak99</Company>
     <Product>XmlSettings</Product>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <PackageProjectUrl>https://github.com/mullak99/XmlSettings</PackageProjectUrl>
     <RepositoryUrl>https://github.com/mullak99/XmlSettings</RepositoryUrl>
     <PackageLicenseUrl>https://www.gnu.org/licenses/gpl-3.0.en.html</PackageLicenseUrl>
-    <PackageReleaseNotes>- Changed project to use .NET Core 2.0</PackageReleaseNotes>
-    <Description>A .NET Core 2.0 library for reading and writing program settings to an XML file.</Description>
+    <PackageReleaseNotes>Builds for both .NET Framework 4.5 and .NET Core 2.0</PackageReleaseNotes>
+    <Description>A .NET Framework 4.5 &amp; .NET Core 2.0 library for reading and writing program settings to an XML file.</Description>
     <PackageTags>xml, xml-parser, library</PackageTags>
+    <AssemblyVersion>1.2.1.0</AssemblyVersion>
+    <FileVersion>1.2.1.0</FileVersion>
   </PropertyGroup>
 
 </Project>
